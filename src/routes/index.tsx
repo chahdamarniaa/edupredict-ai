@@ -2,7 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { ArrowRight, Activity, History, Trash2 } from "lucide-react";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Button } from "@/components/ui/button";
-import { PageHeader } from "@/components/app-shell";
+
 import { Panel, EmptyState, ErrorState } from "@/components/states";
 import { MetricsView, MetricExplainers } from "@/components/metrics";
 import { ModelStatus, useModelState } from "@/components/model-status";
@@ -120,4 +120,3 @@ function Dashboard() {
   );
 }
 
-export { PageHeader };
