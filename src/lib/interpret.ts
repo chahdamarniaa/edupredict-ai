@@ -25,7 +25,8 @@ export function readPrediction(res: JsonValue) {
   const category = findKey(res, /category|level|band|label|class|performance/i, isStr)?.[1] as string | undefined;
   let scaleMin: number | undefined;
   let scaleMax: number | undefined;
-  const scale = findKey(res, /scale|range/i);
+  // Only an explicit grading scale counts — never confidence/prediction ranges.
+  const scale = findKey(res, /^(grade_?scale|grading_?scale|scale|grade_?range)$/i);
   if (scale) {
     const v = scale[1];
     if (isObj(v)) {

@@ -1,23 +1,37 @@
 /**
  * Centralized API client for the FastAPI backend.
  * The base URL comes from VITE_API_BASE_URL — never hardcode it elsewhere.
+ * This module is the ONLY place that calls fetch() against the backend.
  */
 export const API_BASE_URL = (
   (import.meta.env.VITE_API_BASE_URL as string | undefined) || "http://127.0.0.1:8000"
 ).replace(/\/+$/, "");
 
+export type ApiErrorKind =
+  | "network" // server not reachable at all (down, wrong URL/port, firewall)
+  | "cors" // server reachable, but browser blocked the response (CORS / private-network policy)
+  | "mixed-content" // https page calling a plain http backend
+  | "validation" // 422
+  | "bad-request" // 400
+  | "not-found" // 404
+  | "model-unavailable" // 503
+  | "server" // 500 and other 5xx
+  | "http"; // anything else
+
 export class ApiError extends Error {
   status: number;
+  kind: ApiErrorKind;
   detail: unknown;
   fieldErrors: Record<string, string>;
   recoverable: boolean;
 
-  constructor(status: number, message: string, detail: unknown, fieldErrors: Record<string, string> = {}) {
+  constructor(kind: ApiErrorKind, status: number, message: string, detail: unknown, fieldErrors: Record<string, string> = {}) {
     super(message);
+    this.kind = kind;
     this.status = status;
     this.detail = detail;
     this.fieldErrors = fieldErrors;
-    this.recoverable = status === 0 || status >= 500 || status === 429;
+    this.recoverable = !["validation", "bad-request", "not-found"].includes(kind);
   }
 }
 
@@ -28,23 +42,65 @@ function extractDetail(data: unknown): unknown {
 
 function buildError(status: number, data: unknown): ApiError {
   const detail = extractDetail(data);
-  const fieldErrors: Record<string, string> = {};
-  if (status === 422 && Array.isArray(detail)) {
-    for (const d of detail as Array<{ loc?: unknown[]; msg?: string }>) {
-      const loc = (d.loc ?? []).filter((p) => p !== "body");
-      const key = String(loc[loc.length - 1] ?? "");
-      if (key && d.msg) fieldErrors[key] = d.msg;
-    }
-  }
   const text = typeof detail === "string" ? detail : "";
-  const messages: Record<number, string> = {
-    400: text || "The backend rejected the request. Please check your inputs.",
-    404: text || "This endpoint does not exist on the backend.",
-    422: "Some values don't match what the model expects. Please review the highlighted fields.",
-    500: text ? `Server error: ${text}` : "The backend hit an internal error. Please try again.",
-    503: text || "The model is not ready yet. The backend may still be loading it — try again shortly.",
-  };
-  return new ApiError(status, messages[status] ?? (text || `Request failed with status ${status}.`), detail, fieldErrors);
+  if (status === 422) {
+    const fieldErrors: Record<string, string> = {};
+    const generic: string[] = [];
+    if (Array.isArray(detail)) {
+      for (const d of detail as Array<{ loc?: unknown[]; msg?: string }>) {
+        const loc = (d.loc ?? []).filter((p) => p !== "body" && typeof p === "string") as string[];
+        const key = loc[loc.length - 1];
+        if (key && d.msg) fieldErrors[key] = d.msg;
+        else if (d.msg) generic.push(d.msg);
+      }
+    }
+    const n = Object.keys(fieldErrors).length;
+    return new ApiError(
+      "validation",
+      422,
+      `Validation error: the backend rejected ${n ? `${n} field(s)` : "the request"}${generic.length ? ` — ${generic.join("; ")}` : ""}. Review the highlighted fields.`,
+      detail,
+      fieldErrors,
+    );
+  }
+  if (status === 400) return new ApiError("bad-request", 400, `Invalid request: ${text || "the backend rejected the inputs."}`, detail);
+  if (status === 404) return new ApiError("not-found", 404, `Endpoint not found: ${text || "this route does not exist on the backend."}`, detail);
+  if (status === 503)
+    return new ApiError("model-unavailable", 503, `Model unavailable: ${text || "the backend is running but the model is not loaded or ready."}`, detail);
+  if (status >= 500) return new ApiError("server", status, `Backend server error (HTTP ${status})${text ? `: ${text}` : ". Check the FastAPI logs."}`, detail);
+  return new ApiError("http", status, text || `Request failed with status ${status}.`, detail);
+}
+
+/** fetch() failed without a response: figure out whether it's CORS, mixed content, or plain unreachable. */
+async function diagnoseFetchFailure(): Promise<ApiError> {
+  const pageHttps = typeof window !== "undefined" && window.location.protocol === "https:";
+  if (pageHttps && API_BASE_URL.startsWith("http:")) {
+    const loopback = /^http:\/\/(127\.0\.0\.1|localhost|\[::1\])/.test(API_BASE_URL);
+    if (!loopback)
+      return new ApiError(
+        "mixed-content",
+        0,
+        `Blocked: this page is served over https but the backend URL (${API_BASE_URL}) is plain http. Use an https backend URL.`,
+        null,
+      );
+  }
+  try {
+    // An opaque no-cors request succeeds if the server is up, even when CORS would block us.
+    await fetch(`${API_BASE_URL}/openapi.json`, { mode: "no-cors", cache: "no-store" });
+    return new ApiError(
+      "cors",
+      0,
+      `CORS blocked: the backend at ${API_BASE_URL} is reachable, but it does not allow requests from ${typeof window !== "undefined" ? window.location.origin : "this origin"}. Add this origin to FastAPI's CORSMiddleware allow_origins.`,
+      null,
+    );
+  } catch {
+    return new ApiError(
+      "network",
+      0,
+      `Network error: cannot reach ${API_BASE_URL}. Make sure uvicorn is running on that host/port and is reachable from this browser.`,
+      null,
+    );
+  }
 }
 
 export async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -59,11 +115,7 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
       },
     });
   } catch {
-    throw new ApiError(
-      0,
-      `Cannot reach the backend at ${API_BASE_URL}. Make sure the FastAPI server is running, reachable from this browser, and that CORS allows this site.`,
-      null,
-    );
+    throw await diagnoseFetchFailure();
   }
   const text = await res.text();
   let data: unknown = null;

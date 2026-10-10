@@ -1,16 +1,30 @@
 import type { ReactNode } from "react";
 import { AlertTriangle, RefreshCw, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ApiError } from "@/lib/api";
+import { ApiError, type ApiErrorKind } from "@/lib/api";
+
+const KIND_LABEL: Record<ApiErrorKind, string> = {
+  network: "Network error",
+  cors: "CORS blocked",
+  "mixed-content": "Mixed content",
+  validation: "Validation error",
+  "bad-request": "Bad request",
+  "not-found": "Not found",
+  "model-unavailable": "Model unavailable",
+  server: "Server error",
+  http: "HTTP error",
+};
 
 export function ErrorState({ error, onRetry, title = "Couldn't load data" }: { error: unknown; onRetry?: () => void; title?: string }) {
   const msg = error instanceof Error ? error.message : "Unexpected error.";
   const status = error instanceof ApiError && error.status ? ` (HTTP ${error.status})` : "";
+  const kind = error instanceof ApiError ? KIND_LABEL[error.kind] : undefined;
   return (
     <div role="alert" className="flex flex-col items-start gap-3 rounded-xl border border-destructive/25 bg-destructive/5 p-5">
-      <div className="flex items-center gap-2 font-semibold text-destructive">
+      <div className="flex flex-wrap items-center gap-2 font-semibold text-destructive">
         <AlertTriangle className="h-4 w-4" aria-hidden /> {title}
         {status}
+        {kind && <span className="rounded-full bg-destructive/10 px-2 py-0.5 text-xs font-medium">{kind}</span>}
       </div>
       <p className="text-sm text-foreground/80">{msg}</p>
       {onRetry && (

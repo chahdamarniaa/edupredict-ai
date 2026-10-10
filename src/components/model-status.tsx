@@ -1,11 +1,12 @@
 import { useHealth } from "@/hooks/use-backend";
 import { healthState } from "@/lib/interpret";
-import { API_BASE_URL } from "@/lib/api";
+import { API_BASE_URL, ApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const LABELS = {
   online: { text: "Model ready", dot: "bg-success" },
   "not-ready": { text: "Model not ready", dot: "bg-warning" },
+  cors: { text: "Blocked by CORS", dot: "bg-warning" },
   offline: { text: "Backend unreachable", dot: "bg-destructive" },
   unknown: { text: "Checking…", dot: "bg-muted-foreground animate-pulse" },
 };
@@ -13,7 +14,11 @@ const LABELS = {
 export function useModelState() {
   const h = useHealth();
   const noHealthRoute = h.endpoints.isSuccess && !h.endpoints.data.health;
-  const state = noHealthRoute ? "online" : healthState(h.data, h.error);
+  let state: keyof typeof LABELS = noHealthRoute ? "online" : healthState(h.data, h.error);
+  if (h.error instanceof ApiError) {
+    if (h.error.kind === "cors" || h.error.kind === "mixed-content") state = "cors";
+    else if (h.error.kind === "model-unavailable") state = "not-ready";
+  }
   return { ...h, state: h.isLoading ? ("unknown" as const) : state, noHealthRoute };
 }
 
